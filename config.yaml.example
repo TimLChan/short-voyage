@@ -1,0 +1,30 @@
+voyager:
+    api:
+        base_url: "https://cloudserver.nz:443/api/v1"
+        token: "" # get this from https://cloudserver.nz/account#api-tokens
+    project:
+        name: "main"
+        description: "Test project for short-voyage"
+    server:
+        location: 1 # auckland
+        plan: 29 # xxs
+        operatingsystem: 34 # debian 12
+        ssh_keys:
+            - 203
+        fail2ban: true
+        runcmd: |
+            echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+            echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+            sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
+
+tailscale:
+    exit_node: true
+    api:
+        base_url: "https://api.tailscale.com/api/v2"
+        clientid: "" # create an oauth_token from https://login.tailscale.com/admin/settings/trust-credentials with the auth_keys scope
+        clientsecret: ""
+        tailnet: "" # get this from https://login.tailscale.com/admin/settings/general
+        scopes:
+            - "auth_keys"
+    tags:
+        - "voyager"

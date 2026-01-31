@@ -18,6 +18,7 @@ voyager:
             sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
 
 tailscale:
+    enabled: true
     exit_node: true
     api:
         base_url: "https://api.tailscale.com/api/v2"

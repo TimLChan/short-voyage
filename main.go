@@ -49,6 +49,7 @@ type Config struct {
 		} `yaml:"server"`
 	} `yaml:"voyager"`
 	Tailscale struct {
+		Enabled  bool `yaml:"enabled"`
 		ExitNode bool `yaml:"exit_node"`
 		API      struct {
 			BaseURL      string   `yaml:"base_url"`
@@ -99,7 +100,7 @@ func main() {
 	}
 
 	if *createFlag {
-		runCreateTailscale(config)
+		runCreateServer(config)
 	} else if *deleteFlag {
 		runDeleteServer(config)
 	} else {
@@ -187,56 +188,58 @@ func formatServerIPs(server voyager.Server) string {
 	return ipInfo
 }
 
-func runListServers(config *Config) {
-	voyagerClient := initVoyagerClient(config)
-	targetProject := getOrCreateProject(voyagerClient, config, true)
-
-	servers, err := voyagerClient.ListServers(targetProject.ID, config.Voyager.Project.Name)
+// generateServerName generates a random server name
+func generateServerName() (string, error) {
+	randomHex, err := generateRandomHex(8) // 8 hex chars = 4 bytes
 	if err != nil {
-		log.WithField("component", "main").Fatalf("failed to list servers: %v", err)
+		return "", fmt.Errorf("failed to generate random hex: %w", err)
 	}
-
-	if len(servers) == 0 {
-		log.WithField("component", "main").Info("No servers found.")
-	} else {
-		log.WithField("component", "main").Info("")
-		log.WithField("component", "main").Info("servers:")
-		for _, server := range servers {
-			ipInfo := formatServerIPs(server)
-			if ipInfo != "" {
-				log.WithField("component", "main").Infof("- id: %d (%s) | host: %s (%s)", server.ID, server.Status, server.Name, ipInfo)
-			} else {
-				log.WithField("component", "main").Infof("- id: %d (%s) | host: %s", server.ID, server.Status, server.Name)
-			}
-		}
-	}
-	log.WithField("component", "main").Info("")
+	return fmt.Sprintf("voyager-%s.cloudserver.nz", randomHex), nil
 }
 
-func runCreateTailscale(config *Config) {
-	tsClient := tailscale.NewClient(
-		config.Tailscale.API.BaseURL,
-		config.Tailscale.API.ClientID,
-		config.Tailscale.API.ClientSecret,
-		config.Tailscale.API.Tailnet,
-	)
+// promptUserConfirmation asks the user for confirmation and returns true if they confirm
+func promptUserConfirmation() bool {
+	log.WithField("component", "main").Info("")
+	log.WithField("component", "main").Print("do you want to proceed? (yes/no): ")
 
-	// Authenticate with Tailscale
-	if err := tsClient.GetAccessToken(); err != nil {
-		log.Fatalf("Failed to authenticate with Tailscale: %v", err)
+	reader := bufio.NewReader(os.Stdin)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		log.WithField("component", "main").Fatalf("failed to read input: %v", err)
 	}
 
-	// Validate Tailscale token
-	if err := tsClient.ValidateToken(); err != nil {
-		log.Fatalf("Failed to validate Tailscale token: %v", err)
-	}
+	input = strings.TrimSpace(strings.ToLower(input))
+	return input == "yes"
+}
 
-	// Authenticate with Voyager
-	voyagerClient := initVoyagerClient(config)
+// displayServerConfiguration prints the server configuration details to the console
+func displayServerConfiguration(
+	targetProject *voyager.Project,
+	targetLocation *voyager.Location,
+	targetPlan *voyager.Plan,
+	targetOS *voyager.ShortOsImageVersion,
+	serverName string,
+	tailscaleEnabled bool,
+) {
+	log.WithField("component", "main").Info("")
+	log.WithField("component", "main").Info("server configuration:")
+	log.WithField("component", "main").Infof("  - project: %s", targetProject.Name)
+	log.WithField("component", "main").Infof("  - location: %s", targetLocation.Name)
+	log.WithField("component", "main").Infof("  - plan: %s", targetPlan.Name)
+	log.WithField("component", "main").Infof("  - hostname: %s", serverName)
+	log.WithField("component", "main").Infof("  - os: %s", targetOS.Name)
+	log.WithField("component", "main").Infof("  - cpu: %d cores", targetPlan.Params.CPU)
+	log.WithField("component", "main").Infof("  - ram: %d MB", targetPlan.Params.Memory/(1024*1024))
+	log.WithField("component", "main").Infof("  - disk: %d GB", targetPlan.Params.Disk)
+	log.WithField("component", "main").Infof("  - tailscale: %v", tailscaleEnabled)
 
-	// Get/create project
-	targetProject := getOrCreateProject(voyagerClient, config, true)
+	pricePerHour := float64(targetPlan.TokensPerHour) * 0.0025
+	pricePerMonth := float64(targetPlan.TokensPerMonth) * 0.0025
+	log.WithField("component", "main").Infof("  - price: $%.4f/hr ($%.2f/month)", pricePerHour, pricePerMonth)
+}
 
+// validateServerConfiguration validates and returns the server configuration components
+func validateServerConfiguration(voyagerClient *voyager.Client, targetProject *voyager.Project, config *Config) (*voyager.Location, *voyager.Plan, *voyager.ShortOsImageVersion) {
 	// Validate location
 	locations, err := voyagerClient.GetLocations()
 	if err != nil {
@@ -301,48 +304,74 @@ func runCreateTailscale(config *Config) {
 			config.Voyager.Server.OperatingSystem, targetPlan.Name)
 	}
 
-	// Generate random server name
-	randomHex, err := generateRandomHex(8) // 8 hex chars = 4 bytes
+	return targetLocation, targetPlan, targetOS
+}
+
+// initializeTailscale creates and authenticates a Tailscale client if enabled.
+// Returns nil if Tailscale is disabled, otherwise returns authenticated client or error.
+func initializeTailscale(config *Config) (*tailscale.Client, error) {
+	if !config.Tailscale.Enabled {
+		log.WithField("component", "tailscale").Info("tailscale integration disabled")
+		return nil, nil
+	}
+
+	// Validate required credentials
+	if config.Tailscale.API.ClientID == "" ||
+		config.Tailscale.API.ClientSecret == "" ||
+		config.Tailscale.API.Tailnet == "" {
+		return nil, fmt.Errorf("tailscale is enabled but required API credentials are missing")
+	}
+
+	tsClient := tailscale.NewClient(
+		config.Tailscale.API.BaseURL,
+		config.Tailscale.API.ClientID,
+		config.Tailscale.API.ClientSecret,
+		config.Tailscale.API.Tailnet,
+	)
+
+	if err := tsClient.GetAccessToken(); err != nil {
+		return nil, fmt.Errorf("failed to authenticate with Tailscale: %w", err)
+	}
+
+	if err := tsClient.ValidateToken(); err != nil {
+		return nil, fmt.Errorf("failed to validate Tailscale token: %w", err)
+	}
+
+	log.WithField("component", "tailscale").Info("tailscale client initialized successfully")
+	return tsClient, nil
+}
+
+// generateTailscaleCommands creates a Tailscale auth key and returns installation commands.
+// Returns empty slice if tsClient is nil (Tailscale disabled).
+func generateTailscaleCommands(tsClient *tailscale.Client, config *Config) ([]string, error) {
+	if tsClient == nil {
+		return []string{}, nil
+	}
+
+	keyResp, err := tsClient.CreateKey(config.Tailscale.Tags)
 	if err != nil {
-		log.WithField("component", "main").Fatalf("failed to generate random hex: %v", err)
-	}
-	serverName := fmt.Sprintf("voyager-%s.cloudserver.nz", randomHex)
-
-	// Display plan information
-	log.WithField("component", "main").Info("")
-	log.WithField("component", "main").Info("server configuration:")
-	log.WithField("component", "main").Infof("  - project: %s", targetProject.Name)
-	log.WithField("component", "main").Infof("  - location: %s", targetLocation.Name)
-	log.WithField("component", "main").Infof("  - plan: %s", targetPlan.Name)
-	log.WithField("component", "main").Infof("  - hostname: %s", serverName)
-	log.WithField("component", "main").Infof("  - os: %s", targetOS.Name)
-	log.WithField("component", "main").Infof("  - cpu: %d cores", targetPlan.Params.CPU)
-	log.WithField("component", "main").Infof("  - ram: %d MB", targetPlan.Params.Memory/(1024*1024))
-	log.WithField("component", "main").Infof("  - disk: %d GB", targetPlan.Params.Disk)
-	pricePerHour := float64(targetPlan.TokensPerHour) * 0.0025
-	pricePerMonth := float64(targetPlan.TokensPerMonth) * 0.0025
-	log.WithField("component", "main").Infof("  - price: $%.4f/hr ($%.2f/month)", pricePerHour, pricePerMonth)
-
-	// Ask for confirmation
-	log.WithField("component", "main").Info("")
-	log.WithField("component", "main").Print("do you want to proceed? (yes/no): ")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		log.WithField("component", "main").Fatalf("failed to read input: %v", err)
+		return nil, fmt.Errorf("failed to create Tailscale auth key: %w", err)
 	}
 
-	input = strings.TrimSpace(strings.ToLower(input))
-	if input != "yes" {
-		log.WithField("component", "main").Info("server creation cancelled")
-		return
+	installCmd := fmt.Sprintf(
+		"curl -fsSL https://tailscale.com/install.sh | sh && tailscale up --authkey=%s",
+		keyResp.Key,
+	)
+
+	if config.Tailscale.ExitNode {
+		installCmd += " --advertise-exit-node"
 	}
 
-	// Build user_data with runcmd + tailscale command
+	log.WithField("component", "tailscale").Infof("auth key created: %s", keyResp.ID)
+	return []string{installCmd}, nil
+}
+
+// buildCloudInitUserData constructs the cloud-init userData from configuration and commands
+func buildCloudInitUserData(config *Config, tailscaleCommands []string) string {
 	userData := "#cloud-config\nruncmd:\n"
+
+	// Add custom runcmd from config
 	if config.Voyager.Server.RunCmd != "" {
-		// Add each line from runcmd with proper indentation
 		for _, line := range strings.Split(config.Voyager.Server.RunCmd, "\n") {
 			if strings.TrimSpace(line) != "" {
 				userData += fmt.Sprintf("  - %s\n", line)
@@ -350,25 +379,21 @@ func runCreateTailscale(config *Config) {
 		}
 	}
 
-	keyResp, err := tsClient.CreateKey(config.Tailscale.Tags)
-	if err != nil {
-		log.Fatalf("Failed to create Tailscale auth key: %v", err)
+	// Add Tailscale commands
+	for _, cmd := range tailscaleCommands {
+		userData += fmt.Sprintf("  - %s\n", cmd)
 	}
 
-	// Generate installation command
-	installCmd := fmt.Sprintf("curl -fsSL https://tailscale.com/install.sh | sh && tailscale up --authkey=%s", keyResp.Key)
-
-	if config.Tailscale.ExitNode {
-		installCmd += " --advertise-exit-node"
-	}
-	// Add tailscale installation command
-	userData += fmt.Sprintf("  - %s\n", installCmd)
-
-	// Add fail2ban installation command
+	// Add fail2ban if enabled
 	if config.Voyager.Server.Fail2Ban {
-		userData += fmt.Sprintf("  - %s\n", "apt update && apt install fail2ban -y")
+		userData += "  - apt update && apt install fail2ban -y\n"
 	}
 
+	return userData
+}
+
+// createAndMonitorServer creates a server and polls for its status
+func createAndMonitorServer(voyagerClient *voyager.Client, targetProject *voyager.Project, config *Config, serverName, userData string) *voyager.Server {
 	// Create the server
 	createReq := voyager.CreateServerRequest{
 		Name:                      serverName,
@@ -399,7 +424,7 @@ func runCreateTailscale(config *Config) {
 		case <-timeout:
 			log.WithField("component", "main").Warn("timeout waiting for server to start. the server might still be starting.")
 			log.WithField("component", "main").Infof("current status: %s", server.Status)
-			return
+			return server
 		case <-ticker.C:
 			server, err = voyagerClient.GetServer(server.ID)
 			if err != nil {
@@ -421,10 +446,76 @@ func runCreateTailscale(config *Config) {
 				} else {
 					log.WithField("component", "main").Infof("- id: %d (%s) | host: %s", server.ID, server.Status, server.Name)
 				}
-				return
+				return server
 			}
 		}
 	}
+}
+
+func runListServers(config *Config) {
+	voyagerClient := initVoyagerClient(config)
+	targetProject := getOrCreateProject(voyagerClient, config, true)
+
+	servers, err := voyagerClient.ListServers(targetProject.ID, config.Voyager.Project.Name)
+	if err != nil {
+		log.WithField("component", "main").Fatalf("failed to list servers: %v", err)
+	}
+
+	if len(servers) == 0 {
+		log.WithField("component", "main").Info("No servers found.")
+	} else {
+		log.WithField("component", "main").Info("")
+		log.WithField("component", "main").Info("servers:")
+		for _, server := range servers {
+			ipInfo := formatServerIPs(server)
+			if ipInfo != "" {
+				log.WithField("component", "main").Infof("- id: %d (%s) | host: %s (%s)", server.ID, server.Status, server.Name, ipInfo)
+			} else {
+				log.WithField("component", "main").Infof("- id: %d (%s) | host: %s", server.ID, server.Status, server.Name)
+			}
+		}
+	}
+	log.WithField("component", "main").Info("")
+}
+
+func runCreateServer(config *Config) {
+	// Step 1: Initialize Tailscale (if enabled)
+	tsClient, err := initializeTailscale(config)
+	if err != nil {
+		log.WithField("component", "main").Fatalf("Tailscale initialization failed: %v", err)
+	}
+
+	// Step 2: Initialize Voyager
+	voyagerClient := initVoyagerClient(config)
+	targetProject := getOrCreateProject(voyagerClient, config, true)
+
+	// Step 3: Validate server configuration
+	targetLocation, targetPlan, targetOS := validateServerConfiguration(voyagerClient, targetProject, config)
+
+	// Step 4: Generate server name
+	serverName, err := generateServerName()
+	if err != nil {
+		log.WithField("component", "main").Fatalf("Failed to generate server name: %v", err)
+	}
+
+	// Step 5: Display configuration and get user confirmation
+	displayServerConfiguration(targetProject, targetLocation, targetPlan, targetOS, serverName, config.Tailscale.Enabled)
+	if !promptUserConfirmation() {
+		log.WithField("component", "main").Info("server creation cancelled")
+		return
+	}
+
+	// Step 6: Generate Tailscale commands (if enabled)
+	tailscaleCommands, err := generateTailscaleCommands(tsClient, config)
+	if err != nil {
+		log.WithField("component", "main").Fatalf("Failed to generate Tailscale commands: %v", err)
+	}
+
+	// Step 7: Build cloud-init userData
+	userData := buildCloudInitUserData(config, tailscaleCommands)
+
+	// Step 8: Create and monitor server
+	createAndMonitorServer(voyagerClient, targetProject, config, serverName, userData)
 }
 
 func runDeleteServer(config *Config) {

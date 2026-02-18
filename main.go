@@ -307,6 +307,41 @@ func validateServerConfiguration(voyagerClient *voyager.Client, targetProject *v
 	return targetLocation, targetPlan, targetOS
 }
 
+// getSSHKeyID retrieves an SSH key ID from the Voyager account.
+// If preferredID is provided and exists in the account, it is used.
+// Otherwise, falls back to the first available SSH key.
+// TODO: In the future, allow user to select from multiple SSH keys
+func getSSHKeyID(voyagerClient *voyager.Client, preferredID int) (int, error) {
+	sshKeys, err := voyagerClient.GetSSHKeys()
+	if err != nil {
+		return 0, fmt.Errorf("failed to retrieve SSH keys: %w", err)
+	}
+
+	if len(sshKeys) == 0 {
+		return 0, fmt.Errorf("no SSH keys found in account - please add an SSH key at https://cloudserver.nz/account#sshkeys")
+	}
+
+	// Check if preferred ID exists in the account
+	if preferredID > 0 {
+		for _, key := range sshKeys {
+			if key.ID == preferredID {
+				log.WithField("component", "voyager").Infof("using preferred SSH key: %s (id: %d)", key.Name, key.ID)
+				return key.ID, nil
+			}
+		}
+		log.WithField("component", "voyager").Warnf("preferred SSH key (id: %d) not found in account, using first available", preferredID)
+	}
+
+	// TODO: Allow user selection when multiple SSH keys are available
+	if len(sshKeys) > 1 {
+		log.WithField("component", "voyager").Warnf("multiple SSH keys found (%d), using first: %s (id: %d)", len(sshKeys), sshKeys[0].Name, sshKeys[0].ID)
+	} else {
+		log.WithField("component", "voyager").Infof("using ssh key: %s (id: %d)", sshKeys[0].Name, sshKeys[0].ID)
+	}
+
+	return sshKeys[0].ID, nil
+}
+
 // initializeTailscale creates and authenticates a Tailscale client if enabled.
 // Returns nil if Tailscale is disabled, otherwise returns authenticated client or error.
 func initializeTailscale(config *Config) (*tailscale.Client, error) {
@@ -393,13 +428,13 @@ func buildCloudInitUserData(config *Config, tailscaleCommands []string) string {
 }
 
 // createAndMonitorServer creates a server and polls for its status
-func createAndMonitorServer(voyagerClient *voyager.Client, targetProject *voyager.Project, config *Config, serverName, userData string) *voyager.Server {
+func createAndMonitorServer(voyagerClient *voyager.Client, targetProject *voyager.Project, config *Config, serverName, userData string, sshKeyID int) *voyager.Server {
 	// Create the server
 	createReq := voyager.CreateServerRequest{
 		Name:                      serverName,
 		LocationID:                config.Voyager.Server.Location,
 		PlanID:                    config.Voyager.Server.Plan,
-		SSHKeys:                   config.Voyager.Server.SSHKeys,
+		SSHKeys:                   []int{sshKeyID},
 		IPTypes:                   []string{"IPv4", "IPv6"},
 		IsDisasterRecoveryEnabled: false,
 		OSImageVersionID:          config.Voyager.Server.OperatingSystem,
@@ -492,30 +527,40 @@ func runCreateServer(config *Config) {
 	// Step 3: Validate server configuration
 	targetLocation, targetPlan, targetOS := validateServerConfiguration(voyagerClient, targetProject, config)
 
-	// Step 4: Generate server name
+	// Step 4: Retrieve SSH key ID (use config preference if valid, otherwise first available)
+	preferredSSHKey := 0
+	if len(config.Voyager.Server.SSHKeys) > 0 {
+		preferredSSHKey = config.Voyager.Server.SSHKeys[0]
+	}
+	sshKeyID, err := getSSHKeyID(voyagerClient, preferredSSHKey)
+	if err != nil {
+		log.WithField("component", "main").Fatalf("Failed to retrieve SSH key: %v", err)
+	}
+
+	// Step 5: Generate server name
 	serverName, err := generateServerName()
 	if err != nil {
 		log.WithField("component", "main").Fatalf("Failed to generate server name: %v", err)
 	}
 
-	// Step 5: Display configuration and get user confirmation
+	// Step 6: Display configuration and get user confirmation
 	displayServerConfiguration(targetProject, targetLocation, targetPlan, targetOS, serverName, config.Tailscale.Enabled)
 	if !promptUserConfirmation() {
 		log.WithField("component", "main").Info("server creation cancelled")
 		return
 	}
 
-	// Step 6: Generate Tailscale commands (if enabled)
+	// Step 7: Generate Tailscale commands (if enabled)
 	tailscaleCommands, err := generateTailscaleCommands(tsClient, config)
 	if err != nil {
 		log.WithField("component", "main").Fatalf("Failed to generate Tailscale commands: %v", err)
 	}
 
-	// Step 7: Build cloud-init userData
+	// Step 8: Build cloud-init userData
 	userData := buildCloudInitUserData(config, tailscaleCommands)
 
-	// Step 8: Create and monitor server
-	createAndMonitorServer(voyagerClient, targetProject, config, serverName, userData)
+	// Step 9: Create and monitor server
+	createAndMonitorServer(voyagerClient, targetProject, config, serverName, userData, sshKeyID)
 }
 
 func runDeleteServer(config *Config) {

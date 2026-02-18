@@ -9,8 +9,7 @@ voyager:
         location: 1 # auckland
         plan: 29 # xxs
         operatingsystem: 34 # debian 12
-        ssh_keys:
-            - 203
+        ssh_keys: [] # optional: preferred SSH key ID(s). If empty or not found, uses first key from account
         fail2ban: true
         runcmd: |
             echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf

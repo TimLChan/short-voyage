@@ -81,7 +81,9 @@ func LoadConfig(filename string) (*Config, error) {
 func main() {
 	listFlag := flag.Bool("list", false, "List servers in the project")
 	deleteFlag := flag.Bool("delete", false, "Delete a server")
+	serverIDFlag := flag.Int("serverid", 0, "Server ID to delete (used with -delete)")
 	createFlag := flag.Bool("create", false, "Create Tailscale auth key and generate install command")
+	forceFlag := flag.Bool("force", false, "Create server without yes/no confirmation prompt (create only)")
 	flag.Parse()
 
 	log.SetFormatter(&nested.Formatter{
@@ -99,10 +101,18 @@ func main() {
 		log.WithField("component", "main").Fatalf("Failed to load configuration: %v", err)
 	}
 
+	if *forceFlag && !*createFlag {
+		log.WithField("component", "main").Warn("-force has no effect unless -create is also provided")
+	}
+
+	if *serverIDFlag != 0 && !*deleteFlag {
+		log.WithField("component", "main").Warn("-serverid has no effect unless -delete is also provided")
+	}
+
 	if *createFlag {
-		runCreateServer(config)
+		runCreateServer(config, *forceFlag)
 	} else if *deleteFlag {
-		runDeleteServer(config)
+		runDeleteServer(config, *serverIDFlag)
 	} else {
 		// Default behavior or if --list is provided
 		if *listFlag {
@@ -513,7 +523,7 @@ func runListServers(config *Config) {
 	log.WithField("component", "main").Info("")
 }
 
-func runCreateServer(config *Config) {
+func runCreateServer(config *Config, forceCreate bool) {
 	// Step 1: Initialize Tailscale (if enabled)
 	tsClient, err := initializeTailscale(config)
 	if err != nil {
@@ -545,9 +555,13 @@ func runCreateServer(config *Config) {
 
 	// Step 6: Display configuration and get user confirmation
 	displayServerConfiguration(targetProject, targetLocation, targetPlan, targetOS, serverName, config.Tailscale.Enabled)
-	if !promptUserConfirmation() {
-		log.WithField("component", "main").Info("server creation cancelled")
-		return
+	if forceCreate {
+		log.WithField("component", "main").Warn("force mode enabled: skipping confirmation prompt")
+	} else {
+		if !promptUserConfirmation() {
+			log.WithField("component", "main").Info("server creation cancelled")
+			return
+		}
 	}
 
 	// Step 7: Generate Tailscale commands (if enabled)
@@ -563,7 +577,7 @@ func runCreateServer(config *Config) {
 	createAndMonitorServer(voyagerClient, targetProject, config, serverName, userData, sshKeyID)
 }
 
-func runDeleteServer(config *Config) {
+func runDeleteServer(config *Config, requestedServerID int) {
 	voyagerClient := initVoyagerClient(config)
 	targetProject := getOrCreateProject(voyagerClient, config, false)
 
@@ -596,18 +610,41 @@ func runDeleteServer(config *Config) {
 	}
 	log.WithField("component", "main").Info("")
 
-	// Ask user for server ID
-	reader := bufio.NewReader(os.Stdin)
-	log.WithField("component", "main").Print("enter the id of the server to delete: ")
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		log.Fatalf("failed to read input: %v", err)
+	serverIDs := make(map[int]bool, len(servers))
+	for _, server := range servers {
+		serverIDs[server.ID] = true
 	}
 
-	input = strings.TrimSpace(input)
-	serverID, err := strconv.Atoi(input)
-	if err != nil {
-		log.Fatalf("invalid server ID: %v", err)
+	if requestedServerID < 0 {
+		log.WithField("component", "main").Fatal("server ID must be a positive integer")
+	}
+
+	var serverID int
+	if requestedServerID > 0 {
+		serverID = requestedServerID
+		log.WithField("component", "main").Infof("using provided server ID: %d", serverID)
+	} else {
+		// Ask user for server ID
+		reader := bufio.NewReader(os.Stdin)
+		log.WithField("component", "main").Print("enter the id of the server to delete: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatalf("failed to read input: %v", err)
+		}
+
+		input = strings.TrimSpace(input)
+		serverID, err = strconv.Atoi(input)
+		if err != nil {
+			log.Fatalf("invalid server ID: %v", err)
+		}
+	}
+
+	if serverID <= 0 {
+		log.WithField("component", "main").Fatal("server ID must be a positive integer")
+	}
+
+	if !serverIDs[serverID] {
+		log.WithField("component", "main").Fatalf("server id %d not found in project '%s'. run -list and retry", serverID, config.Voyager.Project.Name)
 	}
 
 	// Delete the server

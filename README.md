@@ -12,7 +12,7 @@ short-voyage is a simple command-line tool for managing temporary cloud servers 
   - Optional features including:
       - Tailscale integration including running an exit node
       - Fail2ban integration
-- **Delete Servers**: Interactive deletion process with server listing and confirmation
+- **Delete Servers**: Interactive deletion or direct deletion with `-serverid` (validated against current project server list)
 
 ## Configuration
 
@@ -24,9 +24,13 @@ Usage of short-voyage:
   -create
         Create a new server with the configured settings
   -delete
-        Delete a server (interactive)
+        Delete a server
+  -force
+        Create server without yes/no confirmation prompt (used with -create)
   -list
         List all servers in the project
+  -serverid int
+        Server ID to delete (used with -delete)
 ```
 
 ## Building from Source

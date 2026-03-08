@@ -431,7 +431,7 @@ func buildCloudInitUserData(config *Config, tailscaleCommands []string) string {
 
 	// Add fail2ban if enabled
 	if config.Voyager.Server.Fail2Ban {
-		userData += "  - apt update && apt install fail2ban -y\n"
+		userData += "  - apt update && apt install rsyslog fail2ban -y\n"
 	}
 
 	return userData

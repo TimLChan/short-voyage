@@ -429,9 +429,12 @@ func buildCloudInitUserData(config *Config, tailscaleCommands []string) string {
 		userData += fmt.Sprintf("  - %s\n", cmd)
 	}
 
-	// Add fail2ban if enabled
+	// Add fail2ban and additional ban configuration if enabled
 	if config.Voyager.Server.Fail2Ban {
-		userData += "  - apt update && apt install rsyslog fail2ban -y\n"
+		userData += "  - apt update && apt install fail2ban -y\n"
+		userData += "  - echo 'sshd_backend = systemd' >> /etc/fail2ban/paths-debian.conf\n"
+		userData += "  - echo -e '[sshd]\nenabled = true\nbantime = 10h\nfindtime = 10h\nmaxretry = 3\nbantime.increment = true\nbantime.factor = 2' >> /etc/fail2ban/jail.d/sshd-custom.conf\n"
+		userData += "  - systemctl restart fail2ban\n"
 	}
 
 	return userData

@@ -23,6 +23,22 @@ type Client struct {
 	Token        string
 }
 
+// APIError represents a non-success Tailscale API response.
+type APIError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("tailscale API request %s %s failed with status %d", e.Method, e.Path, e.StatusCode)
+	}
+
+	return fmt.Sprintf("tailscale API request %s %s failed with status %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
 // NewClient creates a new Tailscale API client
 func NewClient(baseURL, clientID, clientSecret, tailnet string) *Client {
 	log.WithField("component", "tailscale").Info("creating client")
@@ -77,7 +93,12 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 
 	if resp.StatusCode != expectedStatus {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return &APIError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+		}
 	}
 
 	if result != nil {

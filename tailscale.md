@@ -1,17 +1,19 @@
-## tailscale configuration
+# Tailscale Configuration
 
-When using the tailscale feature in short-voyage, additional configuration is required in Tailscale to ensure that the exit node is properly set up and ready for use.
+This guide is only required when `tailscale.enabled: true` in `config.yaml`.
 
-### Create a new tag and Exit Node ACLs
+If `tailscale.enabled: false`, short-voyage skips Tailscale authentication/key generation and this setup is not required.
 
-Log into your tailscale dashboard and navigate to the [Access controls](https://login.tailscale.com/admin/acls/file) section.
+## 1. Create a tag and exit-node approver rules
 
-In the visual editor, make the follwing changes:
+Log in to your Tailscale dashboard and open [Access controls](https://login.tailscale.com/admin/acls/file).
+
+In the visual editor, make the following changes:
 
 - Under `Tags`, create a new tag called `voyager` with the tag owner as `autogroup:member`
 - Under `Auto Approvers` add the previously created tag in the `Exit nodes` section
 
-If editing the JSON file directly, the file should have the following sections inside
+If editing the ACL JSON directly, include sections like:
 
 ```json
 // Example/default ACLs for unrestricted connections.
@@ -26,7 +28,7 @@ If editing the JSON file directly, the file should have the following sections i
 }
 ```
 
-### Create a Tailscale OAuth Client
+## 2. Create a Tailscale OAuth client
 
 Navigate to the [Trust Credentials](https://login.tailscale.com/admin/settings/trust-credentials) section and create a new OAuth client.
 
@@ -34,10 +36,34 @@ The client should have the `auth_keys` scope with both read and write permission
 
 Save the client ID and client secret for later use.
 
-### Update the configuration file with Tailscale credentials
+## 3. Update `config.yaml`
 
-Update the `config.yaml` file with your Tailscale credentials
+When Tailscale is enabled, set:
 
 - `clientid`: The client ID of your Tailscale OAuth client
 - `clientsecret`: The client secret of your Tailscale OAuth client
 - `tailnet`: The name of your Tailscale tailnet found in the [General](https://login.tailscale.com/admin/settings/general) section
+
+Example:
+
+```yaml
+tailscale:
+  enabled: true
+  exit_node: true
+  api:
+    base_url: "https://api.tailscale.com/api/v2"
+    clientid: "ts-..."
+    clientsecret: "ts-..."
+    tailnet: "example-tailnet"
+    scopes:
+      - "auth_keys"
+  tags:
+    - "voyager"
+```
+
+To disable integration entirely:
+
+```yaml
+tailscale:
+  enabled: false
+```

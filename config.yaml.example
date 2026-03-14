@@ -17,13 +17,13 @@ voyager:
             sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
 
 tailscale:
-    enabled: true
+    enabled: true # set false to skip tailscale auth/key generation
     exit_node: true
     api:
-        base_url: "https://api.tailscale.com/api/v2"
-        clientid: "" # create an oauth_token from https://login.tailscale.com/admin/settings/trust-credentials with the auth_keys scope
-        clientsecret: ""
-        tailnet: "" # get this from https://login.tailscale.com/admin/settings/general
+        base_url: "https://api.tailscale.com/api/v2" # required when enabled=true
+        clientid: "" # required when enabled=true
+        clientsecret: "" # required when enabled=true
+        tailnet: "" # required when enabled=true
         scopes:
             - "auth_keys"
     tags:

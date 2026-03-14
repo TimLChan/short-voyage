@@ -3,10 +3,10 @@ package voyager
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -17,6 +17,22 @@ type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      string
+}
+
+// APIError represents a non-success Voyager API response.
+type APIError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("voyager API request %s %s failed with status %d", e.Method, e.Path, e.StatusCode)
+	}
+
+	return fmt.Sprintf("voyager API request %s %s failed with status %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
 // NewClient creates a new Voyager API client
@@ -66,7 +82,12 @@ func (c *Client) doRequest(method, path string, body interface{}, result interfa
 
 	if !isExpected {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return &APIError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+		}
 	}
 
 	if result != nil && resp.StatusCode != http.StatusNoContent {
@@ -152,8 +173,8 @@ func (c *Client) GetServer(serverID int) (*Server, error) {
 	var resp ServerResponse
 	err := c.doRequest("GET", fmt.Sprintf("/servers/%d", serverID), nil, &resp, http.StatusOK)
 	if err != nil {
-		// Handle 404 specifically if needed, but doRequest returns error for non-200
-		if strings.Contains(err.Error(), "status 404") {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			return nil, nil
 		}
 		return nil, err

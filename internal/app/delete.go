@@ -12,7 +12,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// RunDelete executes the delete workflow.
+// RunDelete executes the delete workflow
+// requestedServerID is the ID of the server to delete, if 0, the user will be prompted to select a server
 func RunDelete(config *appconfig.Config, requestedServerID int) error {
 	voyagerClient, err := initVoyagerClient(config)
 	if err != nil {

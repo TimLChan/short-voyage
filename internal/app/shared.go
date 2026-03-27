@@ -10,20 +10,38 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const (
-	tokenPricePerUnit = 0.0025
+const tokenPricePerUnit = 0.0025
+
+var (
 	pollInterval      = 2 * time.Second
 	createPollTimeout = 60 * time.Second
 	deletePollTimeout = 20 * time.Second
 )
 
+type voyagerClient interface {
+	VerifyToken() error
+	GetProjects() ([]voyager.Project, error)
+	CreateProject(name, description string) (*voyager.Project, error)
+	ListServers(projectID int, projectName string) ([]voyager.Server, error)
+	GetLocations() ([]voyager.Location, error)
+	GetProjectPlans(projectID int) ([]voyager.Plan, error)
+	GetSSHKeys() ([]voyager.SSHKey, error)
+	CreateServer(projectID int, req voyager.CreateServerRequest) (*voyager.Server, error)
+	GetServer(serverID int) (*voyager.Server, error)
+	DeleteServer(serverID int) error
+}
+
+var newVoyagerClient = func(baseURL, token string) voyagerClient {
+	return voyager.NewClient(baseURL, token)
+}
+
 // initVoyagerClient initialises and verifies the Voyager client.
-func initVoyagerClient(config *appconfig.Config) (*voyager.Client, error) {
+func initVoyagerClient(config *appconfig.Config) (voyagerClient, error) {
 	if config.Voyager.API.Token == "" {
 		return nil, fmt.Errorf("voyager token is required in config.yaml")
 	}
 
-	client := voyager.NewClient(config.Voyager.API.BaseURL, config.Voyager.API.Token)
+	client := newVoyagerClient(config.Voyager.API.BaseURL, config.Voyager.API.Token)
 
 	if err := client.VerifyToken(); err != nil {
 		return nil, fmt.Errorf("failed to verify Voyager API token: %w", err)
@@ -33,7 +51,7 @@ func initVoyagerClient(config *appconfig.Config) (*voyager.Client, error) {
 }
 
 // getOrCreateProject retrieves the project or creates it if it does not exist.
-func getOrCreateProject(client *voyager.Client, config *appconfig.Config, createIfMissing bool) (*voyager.Project, error) {
+func getOrCreateProject(client voyagerClient, config *appconfig.Config, createIfMissing bool) (*voyager.Project, error) {
 	if config.Voyager.Project.Name == "" {
 		return nil, fmt.Errorf("no project specified in config.yaml")
 	}

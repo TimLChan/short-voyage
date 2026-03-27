@@ -15,6 +15,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type tailscaleClient interface {
+	GetAccessToken() error
+	ValidateToken() error
+	CreateKey(tags []string) (*tailscale.KeyResponse, error)
+}
+
+var newTailscaleClient = func(baseURL, clientID, clientSecret, tailnet string) tailscaleClient {
+	return tailscale.NewClient(baseURL, clientID, clientSecret, tailnet)
+}
+
 func generateRandomHex(length int) (string, error) {
 	bytes := make([]byte, length/2)
 	if _, err := rand.Read(bytes); err != nil {
@@ -71,7 +81,9 @@ func displayServerConfiguration(
 	log.WithField("component", "main").Infof("  - price: $%.4f/hr ($%.2f/month)", pricePerHour, pricePerMonth)
 }
 
-func validateServerConfiguration(voyagerClient *voyager.Client, targetProject *voyager.Project, config *appconfig.Config) (*voyager.Location, *voyager.Plan, *voyager.ShortOsImageVersion, error) {
+// validateServerConfiguration validates the server configuration in the config file against Voyager
+// It checks that the selected location, plan, and operating system are valid and available
+func validateServerConfiguration(voyagerClient voyagerClient, targetProject *voyager.Project, config *appconfig.Config) (*voyager.Location, *voyager.Plan, *voyager.ShortOsImageVersion, error) {
 	locations, err := voyagerClient.GetLocations()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get locations: %w", err)
@@ -143,7 +155,10 @@ func validateServerConfiguration(voyagerClient *voyager.Client, targetProject *v
 	return targetLocation, targetPlan, targetOS, nil
 }
 
-func getSSHKeyID(voyagerClient *voyager.Client, preferredID int) (int, error) {
+// getSSHKeyID retrieves the SSH key ID from the Voyager account to automatically add to the VPS
+// If a preferred key ID is specified in the config, it will be used if available.
+// Otherwise the first available SSH key will be used
+func getSSHKeyID(voyagerClient voyagerClient, preferredID int) (int, error) {
 	sshKeys, err := voyagerClient.GetSSHKeys()
 	if err != nil {
 		return 0, fmt.Errorf("failed to retrieve SSH keys: %w", err)
@@ -172,7 +187,9 @@ func getSSHKeyID(voyagerClient *voyager.Client, preferredID int) (int, error) {
 	return sshKeys[0].ID, nil
 }
 
-func initializeTailscale(config *appconfig.Config) (*tailscale.Client, error) {
+// initializeTailscale initializes the Tailscale client if Tailscale integration is enabled
+// Returns nil if Tailscale is disabled
+func initializeTailscale(config *appconfig.Config) (tailscaleClient, error) {
 	if !config.Tailscale.Enabled {
 		log.WithField("component", "tailscale").Info("tailscale integration disabled")
 		return nil, nil
@@ -182,7 +199,7 @@ func initializeTailscale(config *appconfig.Config) (*tailscale.Client, error) {
 		return nil, fmt.Errorf("tailscale is enabled but required API credentials are missing")
 	}
 
-	tsClient := tailscale.NewClient(
+	tsClient := newTailscaleClient(
 		config.Tailscale.API.BaseURL,
 		config.Tailscale.API.ClientID,
 		config.Tailscale.API.ClientSecret,
@@ -201,7 +218,9 @@ func initializeTailscale(config *appconfig.Config) (*tailscale.Client, error) {
 	return tsClient, nil
 }
 
-func generateTailscaleCommands(tsClient *tailscale.Client, config *appconfig.Config) ([]string, error) {
+// generateTailscaleCommands generates the commands to install and configure Tailscale on the server
+// These commands are added to the cloud-init configuration as part of VPS creation
+func generateTailscaleCommands(tsClient tailscaleClient, config *appconfig.Config) ([]string, error) {
 	if tsClient == nil {
 		return []string{}, nil
 	}
@@ -220,6 +239,8 @@ func generateTailscaleCommands(tsClient *tailscale.Client, config *appconfig.Con
 	return []string{installCmd}, nil
 }
 
+// buildCloudInitUserData builds the cloud-init configuration which is part of Voyager's server creation
+// Custom commands can be configured in config.yaml under the voyager.server.run_cmd field
 func buildCloudInitUserData(config *appconfig.Config, tailscaleCommands []string) string {
 	var builder strings.Builder
 	builder.WriteString("#cloud-config\nruncmd:\n")
@@ -240,17 +261,21 @@ func buildCloudInitUserData(config *appconfig.Config, tailscaleCommands []string
 		builder.WriteByte('\n')
 	}
 
+	// fail2ban doesn't automatically pick up the sshd backend moving to systemd in debian 12
+	// ref: https://superuser.com/a/1838559
 	if config.Voyager.Server.Fail2Ban {
 		builder.WriteString("  - apt update && apt install fail2ban -y\n")
 		builder.WriteString("  - echo 'sshd_backend = systemd' >> /etc/fail2ban/paths-debian.conf\n")
-		builder.WriteString("  - echo -e '[sshd]\\nenabled = true\\nbantime = 10h\\nfindtime = 10h\\nmaxretry = 3\\nbantime.increment = true\\nbantime.factor = 2' >> /etc/fail2ban/jail.d/sshd-custom.conf\n")
+		builder.WriteString("  - printf '[sshd]\\nenabled = true\\nbantime = 10h\\nfindtime = 10h\\nmaxretry = 3\\nbantime.increment = true\\nbantime.factor = 2\\n' >> /etc/fail2ban/jail.d/sshd-custom.conf\n")
 		builder.WriteString("  - systemctl restart fail2ban\n")
 	}
 
 	return builder.String()
 }
 
-func createAndMonitorServer(voyagerClient *voyager.Client, targetProject *voyager.Project, config *appconfig.Config, serverName, userData string, sshKeyID int) (*voyager.Server, error) {
+// createAndMonitorServer creates a server and monitors its creation process
+// This function handles the server creation and waits for it to be ready
+func createAndMonitorServer(voyagerClient voyagerClient, targetProject *voyager.Project, config *appconfig.Config, serverName, userData string, sshKeyID int) (*voyager.Server, error) {
 	createReq := voyager.CreateServerRequest{
 		Name:                      serverName,
 		LocationID:                config.Voyager.Server.Location,
@@ -307,7 +332,7 @@ func createAndMonitorServer(voyagerClient *voyager.Client, targetProject *voyage
 	return server, nil
 }
 
-// RunCreate executes the create workflow.
+// RunCreate executes the VPS creation workflow
 func RunCreate(config *appconfig.Config, forceCreate bool) error {
 	tsClient, err := initializeTailscale(config)
 	if err != nil {

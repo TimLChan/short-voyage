@@ -15,6 +15,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const fail2banConfig = `[sshd]
+enabled = true
+backend = systemd
+bantime = 10h
+findtime = 10h
+maxretry = 3
+bantime.increment = true
+bantime.factor = 2`
+
 type tailscaleClient interface {
 	GetAccessToken() error
 	ValidateToken() error
@@ -243,7 +252,28 @@ func generateTailscaleCommands(tsClient tailscaleClient, config *appconfig.Confi
 // Custom commands can be configured in config.yaml under the voyager.server.run_cmd field
 func buildCloudInitUserData(config *appconfig.Config, tailscaleCommands []string) string {
 	var builder strings.Builder
-	builder.WriteString("#cloud-config\nruncmd:\n")
+	builder.WriteString("#cloud-config\n")
+
+	// fail2ban doesn't automatically pick up the sshd backend moving to systemd in debian 12
+	// ref: https://superuser.com/a/1838559
+	// We set backend = systemd inside the [sshd] jail section (rather than the
+	// OS-level sshd_backend in paths-debian.conf) and overwrite the file so the
+	// run stays idempotent on re-provision. The file is written by cloud-init's
+	// write_files module from a literal block scalar, then fail2ban is restarted
+	// from runcmd below.
+	if config.Voyager.Server.Fail2Ban {
+		builder.WriteString("write_files:\n")
+		builder.WriteString("  - path: /etc/fail2ban/jail.d/sshd-custom.conf\n")
+		builder.WriteString("    permissions: '0644'\n")
+		builder.WriteString("    content: |\n")
+		for _, line := range strings.Split(fail2banConfig, "\n") {
+			builder.WriteString("      ")
+			builder.WriteString(line)
+			builder.WriteByte('\n')
+		}
+	}
+
+	builder.WriteString("runcmd:\n")
 
 	if config.Voyager.Server.RunCmd != "" {
 		for _, line := range strings.Split(config.Voyager.Server.RunCmd, "\n") {
@@ -261,12 +291,8 @@ func buildCloudInitUserData(config *appconfig.Config, tailscaleCommands []string
 		builder.WriteByte('\n')
 	}
 
-	// fail2ban doesn't automatically pick up the sshd backend moving to systemd in debian 12
-	// ref: https://superuser.com/a/1838559
 	if config.Voyager.Server.Fail2Ban {
-		builder.WriteString("  - apt update && apt install fail2ban -y\n")
-		builder.WriteString("  - echo 'sshd_backend = systemd' >> /etc/fail2ban/paths-debian.conf\n")
-		builder.WriteString("  - printf '[sshd]\\nenabled = true\\nbantime = 10h\\nfindtime = 10h\\nmaxretry = 3\\nbantime.increment = true\\nbantime.factor = 2\\n' >> /etc/fail2ban/jail.d/sshd-custom.conf\n")
+		builder.WriteString("  - apt update && apt install fail2ban vnstat -y\n")
 		builder.WriteString("  - systemctl restart fail2ban\n")
 	}
 

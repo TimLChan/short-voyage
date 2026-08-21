@@ -168,6 +168,6 @@ func (c *Client) CreateKey(tags []string) (*KeyResponse, error) {
 		return nil, err
 	}
 
-	log.WithField("component", "tailscale").Infof("authkey created with id: %s", keyResp.ID)
+	//log.WithField("component", "tailscale").Infof("authkey created with id: %s", keyResp.ID)
 	return &keyResp, nil
 }

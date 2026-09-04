@@ -8,7 +8,7 @@ voyager:
     server:
         location: 1 # auckland
         plan: 29 # xxs
-        operatingsystem: 34 # debian 12
+        operatingsystem: 59 # debian 13
         ssh_keys: [] # optional: preferred SSH key ID(s). If empty or not found, uses first key from account
         fail2ban: true
         runcmd: |

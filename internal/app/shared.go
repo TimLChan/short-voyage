@@ -22,7 +22,7 @@ type voyagerClient interface {
 	VerifyToken() error
 	GetProjects() ([]voyager.Project, error)
 	CreateProject(name, description string) (*voyager.Project, error)
-	ListServers(projectID int, projectName string) ([]voyager.Server, error)
+	ListServers(projectID int, projectName string, silent ...bool) ([]voyager.Server, error)
 	GetLocations() ([]voyager.Location, error)
 	GetProjectPlans(projectID int) ([]voyager.Plan, error)
 	GetSSHKeys() ([]voyager.SSHKey, error)

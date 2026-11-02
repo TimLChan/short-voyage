@@ -158,8 +158,11 @@ func (c *Client) GetProjectPlans(projectID int) ([]Plan, error) {
 }
 
 // ListServers retrieves all servers for a specific project
-func (c *Client) ListServers(projectID int, projectName string) ([]Server, error) {
-	log.WithField("component", "voyager").Infof("checking project '%s' for servers", projectName)
+func (c *Client) ListServers(projectID int, projectName string, silent ...bool) ([]Server, error) {
+	isSilent := len(silent) > 0 && silent[0]
+	if !isSilent && projectName != "" {
+		log.WithField("component", "voyager").Infof("checking project '%s' for servers", projectName)
+	}
 
 	var resp ServersResponse
 	if err := c.doRequest("GET", fmt.Sprintf("/projects/%d/servers", projectID), nil, &resp, http.StatusOK); err != nil {

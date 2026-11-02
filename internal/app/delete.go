@@ -92,19 +92,21 @@ func RunDelete(config *appconfig.Config, requestedServerID int) error {
 
 	log.WithField("component", "main").Info("polling for server deletion...")
 	timedOut, err := pollWithTimeout(pollInterval, deletePollTimeout, func() (bool, error) {
-		server, pollErr := voyagerClient.GetServer(serverID)
+		servers, pollErr := voyagerClient.ListServers(targetProject.ID, config.Voyager.Project.Name, true)
 		if pollErr != nil {
 			log.WithField("component", "main").Warnf("error checking server status: %v", pollErr)
 			return false, nil
 		}
 
-		if server == nil {
-			log.WithField("component", "main").Infof("server %d deleted successfully", serverID)
-			return true, nil
+		for _, server := range servers {
+			if server.ID == serverID {
+				log.WithField("component", "main").Infof("server %d status: %s", serverID, server.Status)
+				return false, nil
+			}
 		}
 
-		log.WithField("component", "main").Infof("server %d status: %s", serverID, server.Status)
-		return false, nil
+		log.WithField("component", "main").Infof("server %d deleted successfully", serverID)
+		return true, nil
 	})
 	if err != nil {
 		return err
